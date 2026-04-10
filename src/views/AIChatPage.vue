@@ -97,7 +97,7 @@
 
 <script setup lang="ts">
 import { ref, nextTick, onMounted } from 'vue'
-import { chat, getChatHistory, type HistoryMessage } from '../api/chat'
+import { chat, getChatHistory, chatStream, type HistoryMessage } from '../api/chat'
 
 // ========== 响应式数据 ==========
 const inputMessage = ref('')
@@ -169,55 +169,56 @@ const sendMessage = async () => {
   const prompt = inputMessage.value.trim()
   if (!prompt || loading.value) return
 
-  // ✅ 断言：必须有 currentSessionId（由 startNewChat 保证）
-  if (!currentSessionId.value) {
-    console.error('❌ 发送消息时 currentSessionId 为空，请先创建新对话')
-    return
-  }
-
+  // 1️⃣ 添加用户消息
   messages.value.push({
     role: 'user',
     content: prompt,
     timestamp: Date.now(),
   })
-
   inputMessage.value = ''
   loading.value = true
   thinkingText.value = '正在思考...'
   scrollToBottom()
 
+  // 2️⃣ 创建 AI 消息占位（用于流式追加）
+  const aiMessage = ref({
+    role: 'assistant' as const,
+    content: '',
+    timestamp: Date.now(),
+  })
+  messages.value.push(aiMessage)
+
   try {
-    // ✅ 直接传 currentSessionId，后端原样返回
-    const data = await chat({
+    // 3️⃣ 调用流式接口
+    const stream = await chatStream({
       prompt,
-      conversationId: currentSessionId.value, // ✅ 前端生成的 ID
+      conversationId: currentSessionId.value,
     })
 
-    // 🔹 第一条消息时更新会话标题（前端逻辑，与后端无关）
-    if (messages.value.length === 1) {
+    // 4️⃣ 逐块接收并实时更新
+    for await (const chunk of stream) {
+      aiMessage.content += chunk // 🔥 Vue 响应式会自动刷新
+      scrollToBottom() // 可选：实时滚动
+    }
+
+    // 5️⃣ 第一条消息时更新会话标题
+    if (messages.value.filter((m) => m.role === 'user').length === 1) {
       const session = sessions.value.find((s) => s.id === currentSessionId.value)
       if (session) {
         session.title = prompt.length > 20 ? prompt.slice(0, 20) + '...' : prompt
         session.lastTime = Date.now()
       }
     }
-
-    thinkingText.value = ''
-    messages.value.push({
-      role: 'assistant',
-      content: data.content, // ✅ 只用 content
-      timestamp: Date.now(),
-    })
   } catch (error) {
     console.error('发送失败:', error)
-    thinkingText.value = ''
-    messages.value.push({
-      role: 'assistant',
-      content: '抱歉，出现错误，请稍后重试。',
-      timestamp: Date.now(),
-    })
+    // 更新错误提示
+    const lastMsg = messages.value[messages.value.length - 1]
+    if (lastMsg?.role === 'assistant' && !lastMsg.content) {
+      lastMsg.content = '❌ 抱歉，连接中断，请稍后重试。'
+    }
   } finally {
     loading.value = false
+    thinkingText.value = ''
     scrollToBottom()
   }
 }

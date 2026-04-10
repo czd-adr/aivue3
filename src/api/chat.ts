@@ -62,3 +62,41 @@ export const getChatHistory = async (conversationId: string): Promise<HistoryRes
     throw error;
   }
 }
+export const chatStream = async (data: ChatRequest): Promise<any> => {
+  const response = await fetch(`${baseUrl}/ai/chat`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'text/plain', // 🔥 告诉后端我们要纯文本流
+    },
+    body: JSON.stringify(data),
+  });
+
+  if (!response.ok) {
+    throw new Error(`HTTP error! status: ${response.status}`);
+  }
+
+  if (!response.body) {
+    throw new Error('Response body is null');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+
+  // 🔥 返回 AsyncGenerator，支持 for await...of 循环
+  return (async function* () {
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        if (chunk) {
+          yield chunk; // 🔥 逐块产出数据
+        }
+      }
+    } finally {
+      reader.releaseLock(); // 🔥 确保释放锁
+    }
+  })();
+};
